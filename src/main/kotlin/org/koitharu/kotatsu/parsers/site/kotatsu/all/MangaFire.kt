@@ -48,6 +48,7 @@ internal abstract class MangaFireParser(
 
     private val apiClient by lazy {
         val newHttpClient = context.httpClient.newBuilder()
+            .addInterceptor(VrfSigner().interceptor())
             .addInterceptor { chain ->
                 val request = chain.request().newBuilder()
                     .header("Referer", "https://$domain/")
@@ -442,7 +443,7 @@ internal abstract class MangaFireParser(
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val chapterId = chapter.url.substringAfterLast("/") // numeric ID
+        val chapterId = chapter.url.substringAfterLast("/")
         val isVolume = chapter.url.contains("/vol/")
         val endpoint = if (isVolume) "volumes" else "chapters"
 
@@ -469,7 +470,6 @@ internal abstract class MangaFireParser(
     override val authUrl: String get() = "https://$domain"
     override suspend fun isAuthorized(): Boolean = true
     override suspend fun getUsername(): String = ""
-
 
     private fun extractHid(url: String): String {
         val lastPart = url.removeSuffix("/").substringAfterLast("/")
