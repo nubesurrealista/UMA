@@ -39,12 +39,23 @@ fun Document.extractNextJsData(): JSONObject {
         if (obj != null) resolveRefs(obj, chunkCache, modelCache) else null
     }
 
-    // Combine all resolved objects into root
+    // Combine all resolved objects and arrays into root
     for ((_, obj) in resolvedModels) {
         if (obj != null) {
-            for (key in obj.keys()) {
-                if (!root.has(key)) {
-                    root.put(key, obj.get(key))
+            when (obj) {
+                is JSONObject -> {
+                    for (key in obj.keys()) {
+                        if (!root.has(key)) {
+                            root.put(key, obj.get(key))
+                        }
+                    }
+                }
+                is JSONArray -> {
+                    // Store resolved lists in _resolved_lists
+                    if (!root.has("_resolved_lists")) {
+                        root.put("_resolved_lists", JSONArray())
+                    }
+                    root.getJSONArray("_resolved_lists").put(obj)
                 }
             }
         }
@@ -54,14 +65,22 @@ fun Document.extractNextJsData(): JSONObject {
     for ((_, chunk) in chunkCache) {
         if (chunk.startsWith("{") || chunk.startsWith("[")) {
             try {
-                val parsed = JSONObject(chunk)
-                for (key in parsed.keys()) {
-                    if (!root.has(key)) {
-                        root.put(key, parsed.get(key))
+                if (chunk.startsWith("{")) {
+                    val parsed = JSONObject(chunk)
+                    for (key in parsed.keys()) {
+                        if (!root.has(key)) {
+                            root.put(key, parsed.get(key))
+                        }
                     }
+                } else if (chunk.startsWith("[")) {
+                    val parsed = JSONArray(chunk)
+                    if (!root.has("_chunk_lists")) {
+                        root.put("_chunk_lists", JSONArray())
+                    }
+                    root.getJSONArray("_chunk_lists").put(parsed)
                 }
             } catch (_: Exception) {
-                // Not a JSON object, skip
+                // Ignore parsing errors
             }
         }
     }
