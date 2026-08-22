@@ -91,16 +91,60 @@ internal class Lmtos(context: MangaLoaderContext) :
 
         val doc = webClient.httpGet("$baseUrl/series").parseHtml()
         val resolved = doc.extractNextJsData()
-        val mangasArray = findArray(resolved, "mangas") ?: throw Exception("Could not find 'mangas' array")
-        val list = ArrayList<MangaDto>(mangasArray.length())
-        for (i in 0 until mangasArray.length()) {
-            val obj = mangasArray.getJSONObject(i)
-            list.add(MangaDto.fromJson(obj))
+
+        // --- DEPURACIÓN: Lanzar excepción con la información ---
+        val rootKeys = resolved.keys().asSequence().toList()
+        val candidates = findObjectsWithKeys(resolved, setOf("slug", "title"))
+
+        val debugInfo = buildString {
+            appendLine("=== DEPURACIÓN: Claves del objeto raíz ===")
+            appendLine(rootKeys.joinToString())
+
+            if (candidates.isNotEmpty()) {
+                appendLine("\n=== DEPURACIÓN: Encontrados objetos con 'slug' y 'title' ===")
+                for ((path, obj) in candidates.take(5)) {
+                    appendLine("  $path -> slug=${obj.optString("slug")}, title=${obj.optString("title")}")
+                }
+            } else {
+                appendLine("\n=== DEPURACIÓN: No se encontraron objetos con 'slug' y 'title' ===")
+                // Mostrar parte del JSON para inspección
+                val jsonPreview = resolved.toString().take(2000)
+                appendLine("\n=== DEPURACIÓN: JSON parcial (primeros 2000 caracteres) ===")
+                appendLine(jsonPreview)
+            }
         }
 
-        mangaCache = list
-        cacheTimestamp = now
-        return list
+        // Lanzar excepción con la información de depuración
+        throw Exception(debugInfo)
+    }
+
+    private fun findObjectsWithKeys(root: JSONObject, keys: Set<String>, path: String = ""): List<Pair<String, JSONObject>> {
+        val result = mutableListOf<Pair<String, JSONObject>>()
+        for (key in root.keys()) {
+            val value = root.get(key)
+            val currentPath = if (path.isEmpty()) key else "$path.$key"
+            when (value) {
+                is JSONObject -> {
+                    if (keys.all { value.has(it) }) {
+                        result.add(currentPath to value)
+                    }
+                    result.addAll(findObjectsWithKeys(value, keys, currentPath))
+                }
+                is JSONArray -> {
+                    for (i in 0 until value.length()) {
+                        val item = value.optJSONObject(i)
+                        if (item != null) {
+                            val itemPath = "$currentPath[$i]"
+                            if (keys.all { item.has(it) }) {
+                                result.add(itemPath to item)
+                            }
+                            result.addAll(findObjectsWithKeys(item, keys, itemPath))
+                        }
+                    }
+                }
+            }
+        }
+        return result
     }
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -229,8 +273,6 @@ internal class Lmtos(context: MangaLoaderContext) :
         return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
-    // ── Tree search helpers ──
-
     private fun findObject(root: JSONObject, key: String): JSONObject? {
         if (root.has(key)) {
             val obj = root.optJSONObject(key)
@@ -282,8 +324,6 @@ internal class Lmtos(context: MangaLoaderContext) :
         }
         return null
     }
-
-    // ── MangaDto ──
 
     private data class MangaDto(
         val slug: String,
