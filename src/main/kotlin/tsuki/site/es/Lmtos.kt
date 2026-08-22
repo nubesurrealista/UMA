@@ -28,10 +28,6 @@ import java.util.EnumSet
 import java.util.Locale
 import java.util.TimeZone
 
-private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-    timeZone = TimeZone.getTimeZone("UTC")
-}
-
 @MangaSourceParser("LMTO", "LMTO", "es")
 internal class Lmtos(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.LMTO, pageSize = 20) {
@@ -41,6 +37,7 @@ internal class Lmtos(context: MangaLoaderContext) :
 
     @Volatile
     private var mangaCache: List<MangaDto>? = null
+
     @Volatile
     private var cacheTimestamp = 0L
     private val cacheDuration = 10 * 60 * 1000L
@@ -48,7 +45,7 @@ internal class Lmtos(context: MangaLoaderContext) :
     override fun getRequestHeaders(): Headers {
         return super.getRequestHeaders().newBuilder()
             .set("Referer", "$baseUrl/")
-            .set("Origin", "$baseUrl")
+            .set("Origin", baseUrl)
             .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
             .set("Accept-Language", "es-ES,es;q=0.9,en;q=0.8")
             .set("User-Agent", config[userAgentKey])
@@ -92,7 +89,7 @@ internal class Lmtos(context: MangaLoaderContext) :
 
         val doc = webClient.httpGet("$baseUrl/series").parseHtml()
         val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not retrieve source data")
+            ?: throw Exception("Could not obtain source data")
 
         val json = JSONObject(nextDataRaw)
         val mangasArray = findArray(json, "mangas") ?: JSONArray()
@@ -172,7 +169,7 @@ internal class Lmtos(context: MangaLoaderContext) :
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
         val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not retrieve manga details")
+            ?: throw Exception("Could not obtain manga details")
 
         val json = JSONObject(nextDataRaw)
         val mangaObj = findObject(json, "manga") ?: throw Exception("Invalid details structure")
@@ -181,11 +178,12 @@ internal class Lmtos(context: MangaLoaderContext) :
         val dto = MangaDto.fromJson(mangaObj)
 
         val chapters = ArrayList<MangaChapter>()
+        val mangaSlug = manga.url.substringAfterLast("/")
         for (i in 0 until chaptersArray.length()) {
             val ch = chaptersArray.getJSONObject(i)
             val slug = ch.optString("slug")
             val chNumber = ch.optDouble("number", -1.0).toFloat()
-            val chHref = "/manga/${manga.url.substringAfterLast("/")}/$slug"
+            val chHref = "/manga/$mangaSlug/$slug"
             chapters.add(
                 MangaChapter(
                     id = generateUid(chHref),
@@ -212,7 +210,7 @@ internal class Lmtos(context: MangaLoaderContext) :
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
         val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not retrieve chapter pages")
+            ?: throw Exception("Could not obtain chapter pages")
 
         val json = JSONObject(nextDataRaw)
         val chapterObj = findObject(json, "chapter") ?: throw Exception("Invalid chapter structure")
@@ -235,7 +233,7 @@ internal class Lmtos(context: MangaLoaderContext) :
 
     private fun parseDate(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return 0L
-        return runCatching { dateFormat.parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
+        return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
     private fun findObject(json: JSONObject, key: String): JSONObject? {
@@ -306,7 +304,7 @@ internal class Lmtos(context: MangaLoaderContext) :
         val latestChapterCreatedAt: Long? = null,
         val totalViews: Int? = null,
     ) {
-        fun toManga(baseUrl: String, source: MangaParserSource): Manga {
+        fun toManga(baseUrl: String, source: Long): Manga {
             val path = "/manga/$slug"
             val tags = genres?.map { g -> MangaTag(key = g.lowercase(), title = g, source = source) }.orEmpty().toSet()
             val state = when (status?.lowercase()) {
@@ -342,7 +340,7 @@ internal class Lmtos(context: MangaLoaderContext) :
                     (0 until arr.length()).map { arr.getString(it) }
                 }
                 val latest = obj.optString("latestChapterCreatedAt").takeIf { it.isNotEmpty() }
-                    ?.let { dateFormat.parse(it)?.time }
+                    ?.let { createDateFormat().parse(it)?.time }
                 return MangaDto(
                     slug = obj.getString("slug"),
                     title = obj.getString("title"),
@@ -364,6 +362,12 @@ internal class Lmtos(context: MangaLoaderContext) :
     }
 
     companion object {
+        private fun createDateFormat(): SimpleDateFormat {
+            return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+        }
+
         private val GENRES = listOf(
             "Acción",
             "Artes Marciales",
