@@ -32,9 +32,9 @@ private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale
     timeZone = TimeZone.getTimeZone("UTC")
 }
 
-@MangaSourceParser("LMTOONLINE", "LMTO", "es")
-internal class LmtoOnline(context: MangaLoaderContext) :
-    PagedMangaParser(context, MangaParserSource.LMTOONLINE, pageSize = 20) {
+@MangaSourceParser("LMTO", "LMTO", "es")
+internal class Lmtos(context: MangaLoaderContext) :
+    PagedMangaParser(context, MangaParserSource.LMTO, pageSize = 20) {
 
     override val configKeyDomain = ConfigKey.Domain("lmtos.net")
     private val baseUrl = "https://$domain"
