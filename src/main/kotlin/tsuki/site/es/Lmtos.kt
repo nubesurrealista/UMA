@@ -19,7 +19,6 @@ import tsuki.model.RATING_UNKNOWN
 import tsuki.model.SortOrder
 import tsuki.util.generateUid
 import tsuki.util.parseHtml
-import tsuki.util.parseJson
 import tsuki.util.toAbsoluteUrl
 import okhttp3.Headers
 import org.json.JSONArray
@@ -33,7 +32,7 @@ import java.util.TimeZone
 internal class LmtoOnline(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.LMTOONLINE, pageSize = 20) {
 
-    override val configKeyDomain = ConfigKey.Domain("lmto.online")
+    override val configKeyDomain = ConfigKey.Domain("lmtos.net")
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
