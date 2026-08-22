@@ -13,6 +13,7 @@ import tsuki.model.MangaListFilterCapabilities
 import tsuki.model.MangaListFilterOptions
 import tsuki.model.MangaPage
 import tsuki.model.MangaParserSource
+import tsuki.model.MangaSource
 import tsuki.model.MangaState
 import tsuki.model.MangaTag
 import tsuki.model.RATING_UNKNOWN
@@ -186,7 +187,7 @@ internal class Lmtos(context: MangaLoaderContext) :
             val chHref = "/manga/$mangaSlug/$slug"
             chapters.add(
                 MangaChapter(
-                    id = generateUid(chHref),
+                    id = generateUid(source, chHref),
                     url = chHref,
                     title = "Ch. ${chNumber.toString().removeSuffix(".0")}",
                     number = chNumber,
@@ -221,7 +222,7 @@ internal class Lmtos(context: MangaLoaderContext) :
             val pageUrl = pagesArray.getString(i)
             pages.add(
                 MangaPage(
-                    id = generateUid(pageUrl),
+                    id = generateUid(source, pageUrl),
                     url = pageUrl,
                     preview = null,
                     source = source,
@@ -304,7 +305,7 @@ internal class Lmtos(context: MangaLoaderContext) :
         val latestChapterCreatedAt: Long? = null,
         val totalViews: Int? = null,
     ) {
-        fun toManga(baseUrl: String, source: Long): Manga {
+        fun toManga(baseUrl: String, source: MangaSource): Manga {
             val path = "/manga/$slug"
             val tags = genres?.map { g -> MangaTag(key = g.lowercase(), title = g, source = source) }.orEmpty().toSet()
             val state = when (status?.lowercase()) {
@@ -314,7 +315,7 @@ internal class Lmtos(context: MangaLoaderContext) :
                 else -> null
             }
             return Manga(
-                id = generateUid(path),
+                id = generateUid(source, path),
                 url = path,
                 publicUrl = "$baseUrl$path",
                 title = title,
