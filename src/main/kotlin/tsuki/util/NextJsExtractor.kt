@@ -4,42 +4,34 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 
-private val NEXT_F_REGEX = Regex(
-    """self\.__next_f\.push\(\s*(\[.*])\s*\)\s*;?\s*$""",
-    RegexOption.DOT_MATCHES_ALL
-)
-
 /**
- * Extracts all Next.js App Router RSC payloads from the document and resolves all
- * React Flight references, returning a single JSONObject containing all resolved data.
+ * Extracts Next.js App Router RSC payloads from the document and resolves
+ * React Flight references, returning a combined JSONObject.
  */
 fun Document.extractNextJsData(): JSONObject {
     val chunkCache = mutableMapOf<String, String>()
-    val modelCache = mutableMapOf<String, JSONObject?>()
+    val modelCache = mutableMapOf<String, Any?>()
     val root = JSONObject()
 
     select("script:not([src])")
         .mapNotNull { it.data() }
         .filter { "self.__next_f.push" in it }
         .forEach { script ->
-            val match = NEXT_F_REGEX.find(script) ?: return@forEach
-            val raw = match.groupValues[1]
-            val arr = try {
-                JSONArray(raw)
-            } catch (_: Exception) {
-                return@forEach
+            val arrays = extractNextFArraysFromScript(script)
+            for (arr in arrays) {
+                if (arr.length() >= 2) {
+                    val content = arr.optString(1)
+                    if (!content.isNullOrEmpty()) {
+                        extractRscChunks(content, chunkCache, modelCache)
+                    }
+                }
             }
-            if (arr.length() < 2) return@forEach
-            val content = arr.optString(1) ?: return@forEach
-            extractRscChunks(content, chunkCache, modelCache)
         }
 
-    // Resolve all model objects
     val resolvedModels = modelCache.mapValues { (_, obj) ->
-        if (obj != null) resolveRefs(obj, chunkCache, modelCache) else null
+        if (obj != null) resolveValue(obj, chunkCache, modelCache, emptySet()) else null
     }
 
-    // Combine all resolved objects and arrays into root
     for ((_, obj) in resolvedModels) {
         if (obj != null) {
             when (obj) {
@@ -51,7 +43,6 @@ fun Document.extractNextJsData(): JSONObject {
                     }
                 }
                 is JSONArray -> {
-                    // Store resolved lists in _resolved_lists
                     if (!root.has("_resolved_lists")) {
                         root.put("_resolved_lists", JSONArray())
                     }
@@ -61,26 +52,25 @@ fun Document.extractNextJsData(): JSONObject {
         }
     }
 
-    // Also try to parse any chunk strings that might be JSON and add them
     for ((_, chunk) in chunkCache) {
-        if (chunk.startsWith("{") || chunk.startsWith("[")) {
+        val trimmed = chunk.trim()
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
             try {
-                if (chunk.startsWith("{")) {
-                    val parsed = JSONObject(chunk)
+                if (trimmed.startsWith("{")) {
+                    val parsed = JSONObject(trimmed)
                     for (key in parsed.keys()) {
                         if (!root.has(key)) {
                             root.put(key, parsed.get(key))
                         }
                     }
-                } else if (chunk.startsWith("[")) {
-                    val parsed = JSONArray(chunk)
+                } else if (trimmed.startsWith("[")) {
+                    val parsed = JSONArray(trimmed)
                     if (!root.has("_chunk_lists")) {
                         root.put("_chunk_lists", JSONArray())
                     }
                     root.getJSONArray("_chunk_lists").put(parsed)
                 }
             } catch (_: Exception) {
-                // Ignore parsing errors
             }
         }
     }
@@ -88,10 +78,77 @@ fun Document.extractNextJsData(): JSONObject {
     return root
 }
 
+private fun extractNextFArraysFromScript(script: String): List<JSONArray> {
+    val arrays = mutableListOf<JSONArray>()
+    val pushPattern = "self.__next_f.push"
+    var searchIdx = 0
+
+    while (searchIdx < script.length) {
+        val pushIdx = script.indexOf(pushPattern, searchIdx)
+        if (pushIdx == -1) break
+
+        var i = pushIdx + pushPattern.length
+        while (i < script.length && script[i] != '[') {
+            i++
+        }
+        if (i >= script.length) {
+            searchIdx = pushIdx + pushPattern.length
+            continue
+        }
+
+        val bracketStart = i
+        var bracketCount = 0
+        var inString = false
+        var escape = false
+        var j = bracketStart
+
+        while (j < script.length) {
+            val c = script[j]
+            if (escape) {
+                escape = false
+                j++
+                continue
+            }
+            if (c == '\\' && inString) {
+                escape = true
+                j++
+                continue
+            }
+            if (c == '"' && !escape) {
+                inString = !inString
+                j++
+                continue
+            }
+            if (!inString) {
+                if (c == '[') {
+                    bracketCount++
+                } else if (c == ']') {
+                    bracketCount--
+                    if (bracketCount == 0) {
+                        val arrayStr = script.substring(bracketStart, j + 1)
+                        try {
+                            arrays.add(JSONArray(arrayStr))
+                        } catch (_: Exception) {
+                        }
+                        searchIdx = j + 1
+                        break
+                    }
+                }
+            }
+            j++
+        }
+
+        if (bracketCount != 0) {
+            searchIdx = bracketStart + 1
+        }
+    }
+    return arrays
+}
+
 private fun extractRscChunks(
     body: String,
     chunkCache: MutableMap<String, String>,
-    modelCache: MutableMap<String, JSONObject?>
+    modelCache: MutableMap<String, Any?>
 ) {
     var pos = 0
     while (pos < body.length) {
@@ -137,7 +194,7 @@ private fun extractRscChunks(
     }
 }
 
-private fun parseJsonAt(body: String, start: Int): Pair<JSONObject?, Int> {
+private fun parseJsonAt(body: String, start: Int): Pair<Any?, Int> {
     if (start >= body.length) return Pair(null, start)
     var depth = 0
     var inString = false
@@ -162,75 +219,79 @@ private fun parseJsonAt(body: String, start: Int): Pair<JSONObject?, Int> {
             '{', '[' -> depth++
             '}', ']' -> {
                 if (--depth == 0) {
-                    val json = try {
-                        JSONObject(body.substring(start, i))
-                    } catch (_: Exception) {
-                        null
-                    }
-                    return Pair(json, i)
+                    val raw = body.substring(start, i)
+                    val parsed = parseJsonOrRaw(raw)
+                    return Pair(parsed, i)
                 }
             }
         }
         if (depth == 0 && c.isWhitespace()) {
-            val json = try {
-                JSONObject(body.substring(start, i - 1))
-            } catch (_: Exception) {
-                null
-            }
-            return Pair(json, i)
+            val raw = body.substring(start, i - 1)
+            val parsed = parseJsonOrRaw(raw)
+            return Pair(parsed, i)
         }
     }
     return Pair(null, i)
 }
 
-private fun resolveRefs(
-    element: JSONObject,
-    chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>
-): JSONObject {
-    val result = JSONObject()
-    for (key in element.keys()) {
-        val value = element.get(key)
-        result.put(key, resolveValue(value, chunkCache, modelCache, emptySet()))
+private fun parseJsonOrRaw(content: String): Any? {
+    val trimmed = content.trim()
+    return try {
+        if (trimmed.startsWith("{")) {
+            JSONObject(trimmed)
+        } else if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
     }
-    return result
 }
 
 private fun resolveValue(
-    value: Any,
+    value: Any?,
     chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>,
+    modelCache: Map<String, Any?>,
     resolving: Set<String>
-): Any {
+): Any? {
+    if (value == null || value == JSONObject.NULL) return null
     return when (value) {
         is JSONObject -> {
             if (value.has("\$ref")) {
                 val ref = value.getString("\$ref")
                 resolveRef(ref, chunkCache, modelCache, resolving) ?: value
             } else {
-                resolveRefs(value, chunkCache, modelCache)
+                val result = JSONObject()
+                for (key in value.keys()) {
+                    val v = value.get(key)
+                    val resolved = resolveValue(v, chunkCache, modelCache, resolving)
+                    result.put(key, resolved ?: JSONObject.NULL)
+                }
+                result
             }
         }
         is JSONArray -> {
             val arr = JSONArray()
             for (i in 0 until value.length()) {
-                arr.put(resolveValue(value.get(i), chunkCache, modelCache, resolving))
+                val v = value.opt(i)
+                val resolved = resolveValue(v, chunkCache, modelCache, resolving)
+                arr.put(resolved ?: JSONObject.NULL)
             }
             arr
         }
         is String -> {
             if (value.startsWith("$") && value.length > 1) {
-                val str = value
                 when {
-                    str == "\$undefined" -> JSONObject.NULL
-                    str == "\$Infinity" || str == "\$-Infinity" || str == "\$NaN" || str == "\$-0" ->
-                        str.substring(1)
-                    str[1] == '$' -> str.substring(1)
-                    str[1] == 'D' -> str.substring(2)
-                    str[1] == 'n' -> str.substring(2)
-                    str[1] == 'Q' -> resolveMapRef(str.substring(2), chunkCache, modelCache, resolving) ?: str
-                    str[1] == 'W' -> resolveSetRef(str.substring(2), chunkCache, modelCache, resolving) ?: str
-                    else -> resolveModelRef(str.substring(1), chunkCache, modelCache, resolving) ?: str
+                    value == "\$undefined" -> JSONObject.NULL
+                    value == "\$Infinity" || value == "\$-Infinity" || value == "\$NaN" || value == "\$-0" ->
+                        value.substring(1)
+                    value[1] == '$' -> value.substring(1)
+                    value[1] == 'D' -> value.substring(2)
+                    value[1] == 'n' -> value.substring(2)
+                    value[1] == 'Q' -> resolveMapRef(value.substring(2), chunkCache, modelCache, resolving) ?: value
+                    value[1] == 'W' -> resolveSetRef(value.substring(2), chunkCache, modelCache, resolving) ?: value
+                    else -> resolveModelRef(value.substring(1), chunkCache, modelCache, resolving) ?: value
                 }
             } else {
                 value
@@ -243,7 +304,7 @@ private fun resolveValue(
 private fun resolveRef(
     ref: String,
     chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>,
+    modelCache: Map<String, Any?>,
     resolving: Set<String>
 ): Any? {
     val segments = ref.split(':')
@@ -254,11 +315,7 @@ private fun resolveRef(
     if (segments.size == 1) {
         val chunk = chunkCache[id]
         if (chunk != null) {
-            try {
-                return JSONObject(chunk)
-            } catch (_: Exception) {
-                return chunk
-            }
+            return parseJsonOrRaw(chunk) ?: chunk
         }
     }
 
@@ -271,8 +328,8 @@ private fun resolveRef(
                 current = current.opt(segments[i]) ?: return null
             }
             is JSONArray -> {
-                val index = segments[i].toIntOrNull()
-                if (index != null && index < current.length()) {
+                val index = segments[i].toIntOrNull() ?: return null
+                if (index in 0 until current.length()) {
                     current = current.get(index)
                 } else {
                     return null
@@ -287,7 +344,7 @@ private fun resolveRef(
 private fun resolveModelRef(
     reference: String,
     chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>,
+    modelCache: Map<String, Any?>,
     resolving: Set<String>
 ): Any? {
     val segments = reference.split(':')
@@ -296,11 +353,7 @@ private fun resolveModelRef(
     if (segments.size == 1) {
         val chunk = chunkCache[id]
         if (chunk != null) {
-            try {
-                return JSONObject(chunk)
-            } catch (_: Exception) {
-                return chunk
-            }
+            return parseJsonOrRaw(chunk) ?: chunk
         }
     }
 
@@ -322,12 +375,12 @@ private fun resolveModelRef(
                         "props" -> current.opt(3)
                         else -> {
                             val idx = seg.toIntOrNull()
-                            if (idx != null && idx < current.length()) current.opt(idx) else null
+                            if (idx != null && idx in 0 until current.length()) current.opt(idx) else null
                         }
                     } ?: return null
                 } else {
                     val idx = seg.toIntOrNull()
-                    if (idx != null && idx < current.length()) {
+                    if (idx != null && idx in 0 until current.length()) {
                         current = current.get(idx)
                     } else {
                         return null
@@ -336,14 +389,9 @@ private fun resolveModelRef(
             }
             else -> return null
         }
-        // Resolve any pending reference in the current node
-        current = when (current) {
-            is String -> {
-                if (current.startsWith("$") && current.length > 1) {
-                    resolveValue(current, chunkCache, modelCache, guard)
-                } else current
-            }
-            else -> current
+
+        if (current is String && current.startsWith("$") && current.length > 1) {
+            current = resolveValue(current, chunkCache, modelCache, guard) ?: return null
         }
     }
     return resolveValue(current, chunkCache, modelCache, guard)
@@ -352,7 +400,7 @@ private fun resolveModelRef(
 private fun resolveMapRef(
     id: String,
     chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>,
+    modelCache: Map<String, Any?>,
     resolving: Set<String>
 ): JSONObject? {
     if (id in resolving) return null
@@ -372,7 +420,7 @@ private fun resolveMapRef(
 private fun resolveSetRef(
     id: String,
     chunkCache: Map<String, String>,
-    modelCache: Map<String, JSONObject?>,
+    modelCache: Map<String, Any?>,
     resolving: Set<String>
 ): JSONArray? {
     if (id in resolving) return null
