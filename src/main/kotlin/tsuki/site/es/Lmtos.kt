@@ -28,16 +28,16 @@ import java.util.EnumSet
 import java.util.Locale
 import java.util.TimeZone
 
+private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+    timeZone = TimeZone.getTimeZone("UTC")
+}
+
 @MangaSourceParser("LMTOONLINE", "LMTO", "es")
 internal class LmtoOnline(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.LMTOONLINE, pageSize = 20) {
 
     override val configKeyDomain = ConfigKey.Domain("lmtos.net")
     private val baseUrl = "https://$domain"
-
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
 
     @Volatile
     private var mangaCache: List<MangaDto>? = null
@@ -166,7 +166,7 @@ internal class LmtoOnline(context: MangaLoaderContext) :
             .toList()
 
         val pagedList = filtered.drop((page - 1) * pageSize).take(pageSize)
-        return pagedList.map { it.toManga(baseUrl) }
+        return pagedList.map { it.toManga(baseUrl, source) }
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
@@ -202,7 +202,7 @@ internal class LmtoOnline(context: MangaLoaderContext) :
         }
         chapters.sortBy { it.number }
 
-        return dto.toManga(baseUrl).copy(
+        return dto.toManga(baseUrl, source).copy(
             chapters = chapters,
             description = dto.description ?: manga.description,
         )
@@ -306,7 +306,7 @@ internal class LmtoOnline(context: MangaLoaderContext) :
         val latestChapterCreatedAt: Long? = null,
         val totalViews: Int? = null,
     ) {
-        fun toManga(baseUrl: String): Manga {
+        fun toManga(baseUrl: String, source: MangaParserSource): Manga {
             val path = "/manga/$slug"
             val tags = genres?.map { g -> MangaTag(key = g.lowercase(), title = g, source = source) }.orEmpty().toSet()
             val state = when (status?.lowercase()) {
