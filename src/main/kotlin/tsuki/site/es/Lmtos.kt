@@ -29,6 +29,8 @@ import java.util.EnumSet
 import java.util.Locale
 import java.util.TimeZone
 
+private val NEXT_F_REGEX = Regex("""self\.__next_f\.push\(\s*(\[.*])\s*\)\s*;?\s*$""", RegexOption.DOT_MATCHES_ALL)
+
 @MangaSourceParser("LMTO", "LMTO", "es")
 internal class Lmtos(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.LMTO, pageSize = 20) {
@@ -89,11 +91,8 @@ internal class Lmtos(context: MangaLoaderContext) :
         }
 
         val doc = webClient.httpGet("$baseUrl/series").parseHtml()
-        val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not obtain source data")
-
-        val json = JSONObject(nextDataRaw)
-        val mangasArray = findArray(json, "mangas") ?: JSONArray()
+        val resolved = extractNextJsData(doc)
+        val mangasArray = findArray(resolved, "mangas") ?: throw Exception("Could not find 'mangas' array")
         val list = ArrayList<MangaDto>(mangasArray.length())
         for (i in 0 until mangasArray.length()) {
             val obj = mangasArray.getJSONObject(i)
@@ -169,12 +168,9 @@ internal class Lmtos(context: MangaLoaderContext) :
 
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
-        val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not obtain manga details")
-
-        val json = JSONObject(nextDataRaw)
-        val mangaObj = findObject(json, "manga") ?: throw Exception("Invalid details structure")
-        val chaptersArray = findArray(json, "chapters") ?: JSONArray()
+        val resolved = extractNextJsData(doc)
+        val mangaObj = findObject(resolved, "manga") ?: throw Exception("Could not find 'manga' object")
+        val chaptersArray = findArray(resolved, "chapters") ?: JSONArray()
 
         val dto = MangaDto.fromJson(mangaObj)
 
@@ -210,11 +206,8 @@ internal class Lmtos(context: MangaLoaderContext) :
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
-        val nextDataRaw = doc.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw Exception("Could not obtain chapter pages")
-
-        val json = JSONObject(nextDataRaw)
-        val chapterObj = findObject(json, "chapter") ?: throw Exception("Invalid chapter structure")
+        val resolved = extractNextJsData(doc)
+        val chapterObj = findObject(resolved, "chapter") ?: throw Exception("Could not find 'chapter' object")
         val pagesArray = chapterObj.optJSONArray("pages") ?: JSONArray()
 
         val pages = ArrayList<MangaPage>()
@@ -237,15 +230,236 @@ internal class Lmtos(context: MangaLoaderContext) :
         return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
-    private fun findObject(json: JSONObject, key: String): JSONObject? {
-        if (json.has(key)) {
-            val obj = json.optJSONObject(key)
+    // ── RSC extractor ──
+
+    private fun extractNextJsData(doc: org.jsoup.nodes.Document): JSONObject {
+        val chunkCache = mutableMapOf<String, String>()
+        val modelCache = mutableMapOf<String, JSONObject?>()
+        val root = JSONObject()
+
+        val scripts = doc.select("script:not([src])")
+            .mapNotNull { it.data() }
+            .filter { "self.__next_f.push" in it }
+
+        for (script in scripts) {
+            val match = NEXT_F_REGEX.find(script) ?: continue
+            val raw = match.groupValues[1]
+            val arr = try {
+                JSONArray(raw)
+            } catch (_: Exception) {
+                continue
+            }
+            if (arr.length() < 2) continue
+            val content = arr.optString(1) ?: continue
+            extractRscChunks(content, chunkCache, modelCache)
+        }
+
+        for ((id, obj) in modelCache) {
+            if (obj != null) {
+                modelCache[id] = resolveRefs(obj, chunkCache, modelCache)
+            }
+        }
+
+        for ((_, obj) in modelCache) {
+            if (obj != null) {
+                for (key in obj.keys()) {
+                    if (!root.has(key)) {
+                        root.put(key, obj.get(key))
+                    }
+                }
+            }
+        }
+
+        return root
+    }
+
+    private fun extractRscChunks(
+        body: String,
+        chunkCache: MutableMap<String, String>,
+        modelCache: MutableMap<String, JSONObject?>
+    ) {
+        var pos = 0
+        while (pos < body.length) {
+            val colonIdx = body.indexOf(':', pos)
+            if (colonIdx == -1) break
+            val id = body.substring(pos, colonIdx)
+            if (id.isEmpty() || !id.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) {
+                pos++
+                continue
+            }
+            pos = colonIdx + 1
+            if (pos >= body.length) break
+
+            if (body[pos] == 'T') {
+                pos++
+                val commaIdx = body.indexOf(',', pos)
+                if (commaIdx == -1) break
+                val byteLen = body.substring(pos, commaIdx).toIntOrNull(16) ?: break
+                pos = commaIdx + 1
+                var bytes = 0
+                val start = pos
+                while (pos < body.length && bytes < byteLen) {
+                    when {
+                        body[pos].code < 0x80 -> bytes += 1
+                        body[pos].code < 0x800 -> bytes += 2
+                        Character.isHighSurrogate(body[pos]) -> {
+                            bytes += 4
+                            pos++
+                        }
+                        else -> bytes += 3
+                    }
+                    pos++
+                }
+                val chunkContent = body.substring(start, pos)
+                chunkCache[id] = chunkContent
+            } else {
+                val (element, end) = parseJsonAt(body, pos)
+                if (element != null) {
+                    modelCache[id] = element
+                }
+                pos = end
+            }
+        }
+    }
+
+    private fun parseJsonAt(body: String, start: Int): Pair<JSONObject?, Int> {
+        if (start >= body.length) return Pair(null, start)
+        var depth = 0
+        var inString = false
+        var escape = false
+        var i = start
+        while (i < body.length) {
+            val c = body[i++]
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (c == '\\' && inString) {
+                escape = true
+                continue
+            }
+            if (c == '"') {
+                inString = !inString
+                continue
+            }
+            if (inString) continue
+            when (c) {
+                '{', '[' -> depth++
+                '}', ']' -> {
+                    if (--depth == 0) {
+                        val json = try {
+                            JSONObject(body.substring(start, i))
+                        } catch (_: Exception) {
+                            null
+                        }
+                        return Pair(json, i)
+                    }
+                }
+            }
+            if (depth == 0 && c.isWhitespace()) {
+                val json = try {
+                    JSONObject(body.substring(start, i - 1))
+                } catch (_: Exception) {
+                    null
+                }
+                return Pair(json, i)
+            }
+        }
+        return Pair(null, i)
+    }
+
+    private fun resolveRefs(
+        element: JSONObject,
+        chunkCache: Map<String, String>,
+        modelCache: Map<String, JSONObject?>
+    ): JSONObject {
+        val result = JSONObject()
+        for (key in element.keys()) {
+            val value = element.get(key)
+            result.put(key, resolveValue(value, chunkCache, modelCache, emptySet()))
+        }
+        return result
+    }
+
+    private fun resolveValue(
+        value: Any,
+        chunkCache: Map<String, String>,
+        modelCache: Map<String, JSONObject?>,
+        resolving: Set<String>
+    ): Any {
+        return when (value) {
+            is JSONObject -> {
+                if (value.has("\$ref")) {
+                    val ref = value.getString("\$ref")
+                    resolveRef(ref, chunkCache, modelCache, resolving) ?: value
+                } else {
+                    resolveRefs(value, chunkCache, modelCache)
+                }
+            }
+            is JSONArray -> {
+                val arr = JSONArray()
+                for (i in 0 until value.length()) {
+                    arr.put(resolveValue(value.get(i), chunkCache, modelCache, resolving))
+                }
+                arr
+            }
+            is String -> {
+                if (value.startsWith("$") && value.length > 1) {
+                    resolveRef(value.substring(1), chunkCache, modelCache, resolving) ?: value
+                } else {
+                    value
+                }
+            }
+            else -> value
+        }
+    }
+
+    private fun resolveRef(
+        ref: String,
+        chunkCache: Map<String, String>,
+        modelCache: Map<String, JSONObject?>,
+        resolving: Set<String>
+    ): Any? {
+        val segments = ref.split(':')
+        val id = segments[0]
+        if (id in resolving) return null
+        val guard = resolving + id
+
+        var base: Any? = null
+        if (segments.size == 1) {
+            chunkCache[id]?.let { return it }
+        }
+        base = modelCache[id] ?: return null
+
+        var current = base
+        for (i in 1 until segments.size) {
+            if (current is JSONObject) {
+                current = current.opt(segments[i])
+            } else if (current is JSONArray) {
+                val index = segments[i].toIntOrNull()
+                if (index != null && index < current.length()) {
+                    current = current.get(index)
+                } else {
+                    return null
+                }
+            } else {
+                return null
+            }
+        }
+        return resolveValue(current ?: return null, chunkCache, modelCache, guard)
+    }
+
+    // ── Buscadores ──
+
+    private fun findObject(root: JSONObject, key: String): JSONObject? {
+        if (root.has(key)) {
+            val obj = root.optJSONObject(key)
             if (obj != null) return obj
         }
-        val keys = json.keys()
+        val keys = root.keys()
         while (keys.hasNext()) {
             val k = keys.next()
-            val value = json.get(k)
+            val value = root.get(k)
             when (value) {
                 is JSONObject -> {
                     val found = findObject(value, key)
@@ -263,15 +477,15 @@ internal class Lmtos(context: MangaLoaderContext) :
         return null
     }
 
-    private fun findArray(json: JSONObject, key: String): JSONArray? {
-        if (json.has(key)) {
-            val arr = json.optJSONArray(key)
+    private fun findArray(root: JSONObject, key: String): JSONArray? {
+        if (root.has(key)) {
+            val arr = root.optJSONArray(key)
             if (arr != null) return arr
         }
-        val keys = json.keys()
+        val keys = root.keys()
         while (keys.hasNext()) {
             val k = keys.next()
-            val value = json.get(k)
+            val value = root.get(k)
             when (value) {
                 is JSONObject -> {
                     val found = findArray(value, key)
@@ -288,6 +502,8 @@ internal class Lmtos(context: MangaLoaderContext) :
         }
         return null
     }
+
+    // ── MangaDto ──
 
     private data class MangaDto(
         val slug: String,
