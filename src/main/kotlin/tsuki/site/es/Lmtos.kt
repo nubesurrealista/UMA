@@ -262,8 +262,6 @@ internal class Lmtos(context: MangaLoaderContext) :
         return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
-    // ── Recursive tree search helpers (objects, arrays, maps and lists) ──
-
     private fun findArrayRecursive(node: Any?, key: String): JSONArray? {
         if (node == null) return null
 
@@ -348,8 +346,6 @@ internal class Lmtos(context: MangaLoaderContext) :
         }
     }
 
-    // ── MangaDto ──
-
     private data class MangaDto(
         val slug: String,
         val title: String,
@@ -402,10 +398,10 @@ internal class Lmtos(context: MangaLoaderContext) :
                     (0 until arr.length()).map { arr.getString(it) }
                 }
                 val latest = obj.optString("latestChapterCreatedAt").takeIf { it.isNotEmpty() }
-                    ?.let { createDateFormat().parse(it)?.time }
+                    ?.let { runCatching { createDateFormat().parse(it)?.time }.getOrNull() }
                 return MangaDto(
-                    slug = obj.getString("slug"),
-                    title = obj.getString("title"),
+                    slug = obj.optString("slug"),
+                    title = obj.optString("title"),
                     alternativeTitles = altTitles,
                     description = obj.optString("description").takeIf { it.isNotEmpty() },
                     coverImage = obj.optString("coverImage").takeIf { it.isNotEmpty() },
