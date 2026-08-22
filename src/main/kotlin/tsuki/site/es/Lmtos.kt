@@ -91,7 +91,8 @@ internal class Lmtos(context: MangaLoaderContext) :
 
         val doc = webClient.httpGet("$baseUrl/series").parseHtml()
         val resolved = doc.extractNextJsData()
-        val mangasArray = findArray(resolved, "mangas") ?: throw Exception("Could not find 'mangas' array")
+        val mangasArray = findArrayRecursive(resolved, "mangas")
+            ?: throw Exception("Could not find 'mangas' array")
         val list = ArrayList<MangaDto>(mangasArray.length())
         for (i in 0 until mangasArray.length()) {
             val obj = mangasArray.getJSONObject(i)
@@ -168,8 +169,9 @@ internal class Lmtos(context: MangaLoaderContext) :
     override suspend fun getDetails(manga: Manga): Manga {
         val doc = webClient.httpGet(manga.publicUrl).parseHtml()
         val resolved = doc.extractNextJsData()
-        val mangaObj = findObject(resolved, "manga") ?: throw Exception("Could not find 'manga' object")
-        val chaptersArray = findArray(resolved, "chapters") ?: JSONArray()
+        val mangaObj = findObjectRecursive(resolved, "manga")
+            ?: throw Exception("Could not find 'manga' object")
+        val chaptersArray = findArrayRecursive(resolved, "chapters") ?: JSONArray()
 
         val dto = MangaDto.fromJson(mangaObj)
 
@@ -206,7 +208,8 @@ internal class Lmtos(context: MangaLoaderContext) :
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
         val resolved = doc.extractNextJsData()
-        val chapterObj = findObject(resolved, "chapter") ?: throw Exception("Could not find 'chapter' object")
+        val chapterObj = findObjectRecursive(resolved, "chapter")
+            ?: throw Exception("Could not find 'chapter' object")
         val pagesArray = chapterObj.optJSONArray("pages") ?: JSONArray()
 
         val pages = ArrayList<MangaPage>()
@@ -229,58 +232,62 @@ internal class Lmtos(context: MangaLoaderContext) :
         return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
-    // ── Tree search helpers ──
+    // ── Recursive tree search helpers (objects and arrays) ──
 
-    private fun findObject(root: JSONObject, key: String): JSONObject? {
-        if (root.has(key)) {
-            val obj = root.optJSONObject(key)
-            if (obj != null) return obj
-        }
-        val keys = root.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val value = root.get(k)
-            when (value) {
-                is JSONObject -> {
-                    val found = findObject(value, key)
+    private fun findArrayRecursive(node: Any, key: String): JSONArray? {
+        return when (node) {
+            is JSONObject -> {
+                if (node.has(key)) {
+                    val arr = node.optJSONArray(key)
+                    if (arr != null) return arr
+                }
+                for (k in node.keys()) {
+                    val value = node.get(k)
+                    val found = findArrayRecursive(value, key)
                     if (found != null) return found
                 }
-                is JSONArray -> {
-                    for (i in 0 until value.length()) {
-                        val item = value.optJSONObject(i) ?: continue
-                        val found = findObject(item, key)
+                null
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    val item = node.opt(i)
+                    if (item != null) {
+                        val found = findArrayRecursive(item, key)
                         if (found != null) return found
                     }
                 }
+                null
             }
+            else -> null
         }
-        return null
     }
 
-    private fun findArray(root: JSONObject, key: String): JSONArray? {
-        if (root.has(key)) {
-            val arr = root.optJSONArray(key)
-            if (arr != null) return arr
-        }
-        val keys = root.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val value = root.get(k)
-            when (value) {
-                is JSONObject -> {
-                    val found = findArray(value, key)
+    private fun findObjectRecursive(node: Any, key: String): JSONObject? {
+        return when (node) {
+            is JSONObject -> {
+                if (node.has(key)) {
+                    val obj = node.optJSONObject(key)
+                    if (obj != null) return obj
+                }
+                for (k in node.keys()) {
+                    val value = node.get(k)
+                    val found = findObjectRecursive(value, key)
                     if (found != null) return found
                 }
-                is JSONArray -> {
-                    for (i in 0 until value.length()) {
-                        val item = value.optJSONObject(i) ?: continue
-                        val found = findArray(item, key)
+                null
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    val item = node.opt(i)
+                    if (item != null) {
+                        val found = findObjectRecursive(item, key)
                         if (found != null) return found
                     }
                 }
+                null
             }
+            else -> null
         }
-        return null
     }
 
     // ── MangaDto ──
