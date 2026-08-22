@@ -330,7 +330,7 @@ internal class LmtoOnline(context: MangaLoaderContext) :
 
     private fun parseDate(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return 0L
-        return runCatching { dateFormat.parse(dateStr)?.time }.getOrDefault(0L)
+        return runCatching { dateFormat.parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
     companion object {
