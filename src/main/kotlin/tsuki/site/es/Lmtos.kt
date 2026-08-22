@@ -91,8 +91,17 @@ internal class Lmtos(context: MangaLoaderContext) :
 
         val doc = webClient.httpGet("$baseUrl/series").parseHtml()
         val resolved = doc.extractNextJsData()
-        val mangasArray = findArrayRecursive(resolved, "mangas")
-            ?: throw Exception("Could not find 'mangas' array")
+
+        var mangasArray = findArrayRecursive(resolved, "mangas")
+
+        if (mangasArray == null) {
+            mangasArray = findMangaArrayInChunks(resolved)
+        }
+
+        if (mangasArray == null) {
+            throw Exception("Could not find 'mangas' array or equivalent chunk list")
+        }
+
         val list = ArrayList<MangaDto>(mangasArray.length())
         for (i in 0 until mangasArray.length()) {
             val obj = mangasArray.getJSONObject(i)
@@ -102,6 +111,27 @@ internal class Lmtos(context: MangaLoaderContext) :
         mangaCache = list
         cacheTimestamp = now
         return list
+    }
+
+    private fun findMangaArrayInChunks(resolved: Any): JSONArray? {
+        if (resolved !is JSONObject) return null
+
+        val keys = listOf("_resolved_lists", "_chunk_lists")
+        for (key in keys) {
+            if (resolved.has(key)) {
+                val arrayList = resolved.optJSONArray(key) ?: continue
+                for (i in 0 until arrayList.length()) {
+                    val currentList = arrayList.optJSONArray(i)
+                    if (currentList != null && currentList.length() > 0) {
+                        val firstItem = currentList.optJSONObject(0)
+                        if (firstItem != null && firstItem.has("slug") && firstItem.has("title")) {
+                            return currentList
+                        }
+                    }
+                }
+            }
+        }
+        return null
     }
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -232,9 +262,11 @@ internal class Lmtos(context: MangaLoaderContext) :
         return runCatching { createDateFormat().parse(dateStr)?.time ?: 0L }.getOrDefault(0L)
     }
 
-    // ── Recursive tree search helpers (objects and arrays) ──
+    // ── Recursive tree search helpers (objects, arrays, maps and lists) ──
 
-    private fun findArrayRecursive(node: Any, key: String): JSONArray? {
+    private fun findArrayRecursive(node: Any?, key: String): JSONArray? {
+        if (node == null) return null
+
         return when (node) {
             is JSONObject -> {
                 if (node.has(key)) {
@@ -251,10 +283,22 @@ internal class Lmtos(context: MangaLoaderContext) :
             is JSONArray -> {
                 for (i in 0 until node.length()) {
                     val item = node.opt(i)
-                    if (item != null) {
-                        val found = findArrayRecursive(item, key)
-                        if (found != null) return found
-                    }
+                    val found = findArrayRecursive(item, key)
+                    if (found != null) return found
+                }
+                null
+            }
+            is Map<*, *> -> {
+                for ((_, value) in node) {
+                    val found = findArrayRecursive(value, key)
+                    if (found != null) return found
+                }
+                null
+            }
+            is List<*> -> {
+                for (item in node) {
+                    val found = findArrayRecursive(item, key)
+                    if (found != null) return found
                 }
                 null
             }
@@ -262,7 +306,9 @@ internal class Lmtos(context: MangaLoaderContext) :
         }
     }
 
-    private fun findObjectRecursive(node: Any, key: String): JSONObject? {
+    private fun findObjectRecursive(node: Any?, key: String): JSONObject? {
+        if (node == null) return null
+
         return when (node) {
             is JSONObject -> {
                 if (node.has(key)) {
@@ -279,10 +325,22 @@ internal class Lmtos(context: MangaLoaderContext) :
             is JSONArray -> {
                 for (i in 0 until node.length()) {
                     val item = node.opt(i)
-                    if (item != null) {
-                        val found = findObjectRecursive(item, key)
-                        if (found != null) return found
-                    }
+                    val found = findObjectRecursive(item, key)
+                    if (found != null) return found
+                }
+                null
+            }
+            is Map<*, *> -> {
+                for ((_, value) in node) {
+                    val found = findObjectRecursive(value, key)
+                    if (found != null) return found
+                }
+                null
+            }
+            is List<*> -> {
+                for (item in node) {
+                    val found = findObjectRecursive(item, key)
+                    if (found != null) return found
                 }
                 null
             }
