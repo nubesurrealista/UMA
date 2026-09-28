@@ -37,6 +37,7 @@ import tsuki.util.urlEncoded
 
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.EnumSet
@@ -75,7 +76,6 @@ internal class MangaTown(context: MangaLoaderContext) :
             isYearSupported = false,
         )
 
-
     @Volatile
     private var allTagsCache: List<MangaTag>? = null
 
@@ -104,7 +104,7 @@ internal class MangaTown(context: MangaLoaderContext) :
             ContentType.MANHWA,
         ),
     )
-    
+
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val query = filter.query?.trim()
         val hasFilters = filter.types.isNotEmpty() || filter.demographics.isNotEmpty() ||
@@ -282,15 +282,7 @@ internal class MangaTown(context: MangaLoaderContext) :
             chapters = chaptersList?.mapChapters { i, li ->
                 val linkEl = li.selectFirst("a") ?: return@mapChapters null
                 val href = linkEl.attrAsRelativeUrl("href")
-                val name = buildString {
-                    append(linkEl.text())
-                    li.select("span").filter { span ->
-                        !span.hasClass("time") && !span.hasClass("new")
-                    }.forEach { span ->
-                        if (isNotEmpty()) append(" ")
-                        append(span.text())
-                    }
-                }
+                val name = linkEl.ownText().trim()
                 MangaChapter(
                     id = generateUid(href),
                     url = href,
@@ -308,7 +300,7 @@ internal class MangaTown(context: MangaLoaderContext) :
             } ?: emptyList(),
         )
     }
-    
+
     private suspend fun bypassLicensedChapters(manga: Manga): List<MangaChapter> {
         val subdomain = "m." + domain.removePrefix("www.")
         val doc = webClient.httpGet(manga.url.toAbsoluteUrl(subdomain), getRequestHeaders()).parseHtml()
@@ -334,7 +326,7 @@ internal class MangaTown(context: MangaLoaderContext) :
             )
         }
     }
-    
+
     private fun parseChapterDate(dateFormat: SimpleDateFormat, date: String?): Long {
         return when {
             date.isNullOrEmpty() -> 0L
@@ -362,22 +354,39 @@ internal class MangaTown(context: MangaLoaderContext) :
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val fullUrl = chapter.url.toAbsoluteUrl(domain)
-        val doc = webClient.httpGet(fullUrl, getRequestHeaders()).parseHtml()
-        val pageSelect = doc.body().selectFirst("div.page_select select") ?: return emptyList()
-        val options = pageSelect.select("option").filterNot { it.attr("value").endsWith("featured.html") }
-        if (options.isNotEmpty()) {
-            return options.mapIndexed { _, option ->
-                val href = option.attrAsRelativeUrl("value")
-                MangaPage(
-                    id = generateUid(href),
-                    url = href,
-                    preview = null,
-                    source = source,
-                )
+        val desktopUrl = chapter.url.toAbsoluteUrl(domain)
+        var doc = webClient.httpGet(desktopUrl, getRequestHeaders()).parseHtml()
+        var pages = parsePagesFromDoc(doc)
+        if (pages.isNotEmpty()) return pages
+
+        val mobileDomain = "m." + domain.removePrefix("www.")
+        val mobileUrl = chapter.url.toAbsoluteUrl(mobileDomain)
+        doc = webClient.httpGet(mobileUrl, getRequestHeaders()).parseHtml()
+        pages = parsePagesFromDoc(doc)
+        if (pages.isNotEmpty()) return pages
+
+        return emptyList()
+    }
+
+    private fun parsePagesFromDoc(doc: Document): List<MangaPage> {
+        val pageSelect = doc.body().selectFirst("div.page_select select")
+        if (pageSelect != null) {
+            val options = pageSelect.select("option")
+                .filterNot { it.attr("value").endsWith("featured.html") }
+            if (options.isNotEmpty()) {
+                return options.mapIndexed { _, option ->
+                    val href = option.attrAsRelativeUrl("value")
+                    MangaPage(
+                        id = generateUid(href),
+                        url = href,
+                        preview = null,
+                        source = source,
+                    )
+                }
             }
         }
-        val imgElements = doc.select("div#viewer img")
+
+        val imgElements = doc.select("div#viewer img, div.mangaread-img img")
         return imgElements.map { img ->
             val src = img.attrAsAbsoluteUrl("src")
             MangaPage(
@@ -395,6 +404,6 @@ internal class MangaTown(context: MangaLoaderContext) :
         return doc.selectFirst("div#viewer img")?.attrAsAbsoluteUrl("src")
             ?: throw Exception("Could not find image")
     }
-    
+
     private fun String.nullIfEmpty(): String? = ifEmpty { null }
 }

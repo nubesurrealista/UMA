@@ -32,6 +32,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.Headers
 import org.json.JSONArray
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -55,9 +56,16 @@ abstract class MangaThemesia(
         keys.add(userAgentKey)
     }
 
-    override fun getRequestHeaders() = super.getRequestHeaders().newBuilder()
-        .set(CommonHeaders.REFERER, "https://$domain/")
-        .build()
+    override fun getRequestHeaders(): Headers {
+        val builder = super.getRequestHeaders().newBuilder()
+            .set(CommonHeaders.REFERER, "https://$domain/")
+
+        val userAgent = builder["User-Agent"]
+            ?: config[userAgentKey]
+        applyClientHints(builder, userAgent)
+
+        return builder.build()
+    }
 
     protected open val mangaDirectory = "manga"
     protected open val dateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale("en"))
@@ -429,7 +437,9 @@ abstract class MangaThemesia(
         )
     }
 
-    protected fun Element.imgAttr(): String {
+    protected open fun Element.imgAttr(): String = imgAttrFallback()
+
+    protected fun Element.imgAttrFallback(): String {
         for (attr in listOf("data-src", "data-lazy-src", "data-original", "data-cfsrc", "data-image", "src")) {
             val value = attr(attr).trim().takeIf { it.isNotEmpty() } ?: continue
             return value.toAbsoluteUrl(domain).substringBefore("?") // remove WP resize params
@@ -447,7 +457,70 @@ abstract class MangaThemesia(
     private fun SimpleDateFormat.parseSafe(date: String): Long =
         runCatching { parse(date)?.time ?: 0L }.getOrDefault(0L)
 
+    private fun applyClientHints(builder: Headers.Builder, userAgent: String) {
+        val info = detectBrowser(userAgent) ?: return
+
+        val isMobile = userAgent.contains("Mobile") ||
+                userAgent.contains("Android") ||
+                userAgent.contains("iPhone") ||
+                userAgent.contains("iPad")
+
+        builder["Sec-CH-UA"] = buildSecChUa(info)
+        builder["Sec-CH-UA-Mobile"] = if (isMobile) "?1" else "?0"
+        builder["Sec-CH-UA-Platform"] = detectPlatform(userAgent)
+        builder["DNT"] = "1"
+    }
+
+    /** Firefox and Safari don't send client hints*/
+    private fun detectBrowser(userAgent: String): BrowserInfo? = when {
+        userAgent.contains("Firefox/") && !userAgent.contains("Chrome") -> null
+        userAgent.contains("Safari/") &&
+                !userAgent.contains("Chrome") &&
+                !userAgent.contains("Chromium") -> null
+
+        userAgent.contains("Edg/") || userAgent.contains("EdgA/") || userAgent.contains("EdgiOS/") -> {
+            val edgeVersion = EDGE_REGEX.find(userAgent)?.groupValues?.get(1) ?: "134"
+            val chromiumVersion = CHROME_REGEX.find(userAgent)?.groupValues?.get(1) ?: edgeVersion
+            BrowserInfo("Microsoft Edge", edgeVersion, chromiumVersion)
+        }
+
+        userAgent.contains("OPR/") -> {
+            val operaVersion = OPERA_REGEX.find(userAgent)?.groupValues?.get(1) ?: "118"
+            val chromiumVersion = CHROME_REGEX.find(userAgent)?.groupValues?.get(1) ?: "134"
+            BrowserInfo("Opera", operaVersion, chromiumVersion)
+        }
+
+        userAgent.contains("Chrome/") -> {
+            val chromeVersion = CHROME_REGEX.find(userAgent)?.groupValues?.get(1) ?: "134"
+            BrowserInfo("Google Chrome", chromeVersion, chromeVersion)
+        }
+
+        else -> null
+    }
+
+    private fun detectPlatform(userAgent: String): String = when {
+        userAgent.contains("Windows") -> "\"Windows\""
+        userAgent.contains("Android") -> "\"Android\""
+        userAgent.contains("iPhone") || userAgent.contains("iPad") -> "\"iOS\""
+        userAgent.contains("Macintosh") || userAgent.contains("Mac OS X") -> "\"macOS\""
+        userAgent.contains("Linux") -> "\"Linux\""
+        else -> "\"Windows\""
+    }
+
+    private fun buildSecChUa(info: BrowserInfo): String =
+        "\"${info.name}\";v=\"${info.version}\", \"Chromium\";v=\"${info.chromiumVersion}\", \"Not A(Brand\";v=\"24\""
+
+    private data class BrowserInfo(
+        val name: String,
+        val version: String,
+        val chromiumVersion: String,
+    )
+
     companion object {
+        private val CHROME_REGEX = Regex("""Chrome/(\d+)""")
+        private val EDGE_REGEX = Regex("""Edg[^/]*/(\d+)""")
+        private val OPERA_REGEX = Regex("""OPR/(\d+)""")
+
         private val AUTHOR_PLACEHOLDERS = setOf("n/a", "N/A", "Updating")
 
         private val ongoingWordSet = WordSet(

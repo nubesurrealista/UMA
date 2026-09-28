@@ -44,6 +44,7 @@ internal class Manhwa18CC(context: MangaLoaderContext) :
     override val tagPrefix = "webtoon-genre/"
     override val withoutAjax = true
     override val selectTestAsync = "ul.row-content-chapter"
+    override val selectDesc = "div.panel-story-description div.dsct, div.dsct"
     override val selectDate = "span.chapter-time"
     override val selectChapter = "li.a-h"
     override val selectBodyPage = "div.read-content"

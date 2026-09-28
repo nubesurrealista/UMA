@@ -2,12 +2,12 @@ package tsuki.site.en
 
 import tsuki.MangaLoaderContext
 import tsuki.MangaSourceParser
-import tsuki.model.MangaListFilterCapabilities
 import tsuki.parsers.MadaraParser
 
 import tsuki.model.MangaListFilterOptions
 import tsuki.model.MangaParserSource
 import tsuki.model.MangaTag
+import tsuki.model.MangaListFilterCapabilities
 
 import androidx.collection.arraySetOf
 

@@ -55,6 +55,7 @@ internal class NHentaiParser(context: MangaLoaderContext) :
     override val filterCapabilities = MangaListFilterCapabilities(
         isSearchSupported = true,
         isSearchWithFiltersSupported = true,
+        isMultipleTagsSupported = true,
     )
 
     private val preferredServerKey = ConfigKey.PreferredImageServer(
@@ -816,10 +817,10 @@ internal class NHentaiParser(context: MangaLoaderContext) :
     }
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
-        availableTags = nhTagMap.map { (id, name) ->
+        availableTags = nhTagMap.map { (_, name) ->
             MangaTag(
                 title = name.replace("-", " ").replaceFirstChar { it.uppercase() },
-                key = id,                     // numeric tag ID
+                key = name.replace(" ", "-"),
                 source = source,
             )
         }.toSet(),
@@ -848,11 +849,7 @@ internal class NHentaiParser(context: MangaLoaderContext) :
     }
 
 
-    override suspend fun getListPage(
-        page: Int,
-        order: SortOrder,
-        filter: MangaListFilter,
-    ): List<Manga> {
+    override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         ensureNhConfig()
 
         val directId = extractGalleryId(filter.query)
@@ -864,18 +861,17 @@ internal class NHentaiParser(context: MangaLoaderContext) :
             }
         }
 
-        val selectedTag = filter.tags.firstOrNull()
-        if (selectedTag != null) {
-            val url = "https://$domain/api/v2/galleries/tagged?tag_id=${selectedTag.key}&page=$page"
-            val json = webClient.httpGet(url).parseJson()
-            val items = json.getJSONArray("result")
-            return (0 until items.length()).map { i -> items.getJSONObject(i).toManga() }
-        }
-
         val lang = filter.locale?.let { LANG_MAP[it.language] }
+
         val searchQuery = buildString {
             if (!filter.query.isNullOrBlank()) {
-                append("title:\"${filter.query}\"")
+                append("title:\"${filter.query!!.trim()}\"")
+            }
+            filter.tags.forEach { tag ->
+                if (isNotEmpty()) append(" ")
+                append("tag:\"")
+                append(tag.key)
+                append("\"")
             }
             if (lang != null) {
                 if (isNotEmpty()) append(" ")

@@ -4,8 +4,9 @@ import tsuki.MangaLoaderContext
 import tsuki.MangaSourceParser
 import tsuki.parsers.MadaraParser
 
+import tsuki.model.ContentType
 import tsuki.model.MangaParserSource
 
-@MangaSourceParser("MANHWATOP", "ManhwaTop", "en")
+@MangaSourceParser("MANHWATOP", "ManhwaTop", "en", ContentType.MANHWA)
 internal class ManhwaTop(context: MangaLoaderContext) :
     MadaraParser(context, MangaParserSource.MANHWATOP, "manhwatop.com")
